@@ -1,0 +1,122 @@
+language: go
+
+go:
+- "1.15"
+
+os: linux
+dist: focal
+
+git:
+  depth: false
+
+env:  
+   global:
+   - TAG=next
+   - TRAVIS_TAG=travis
+   - REGISTRY=quay.io
+   - ORGANIZATION=eclipse
+   - IMAGE=che-machine-exec
+   - PR_NUMBER=
+
+install:
+  - export SHORT_SHA=$(git rev-parse --short HEAD)
+  - echo "$DOCKER_PASSWORD" | docker login -u "$DOCKER_USERNAME" --password-stdin
+  - echo "$QUAY_PASSWORD" | docker login quay.io -u "$QUAY_USERNAME " --password-stdin
+
+jobs:
+  fast_finish: true
+  allow_failures:
+   - if: env(PR_NUMBER) IS present
+     arch: arm64
+   - if: env(PR_NUMBER) IS present
+     arch: ppc64le
+   - if: env(PR_NUMBER) IS present
+     arch: s390x
+  include:
+   - &docker-build-pr
+     stage: PR Check
+     if: env(PR_NUMBER) IS present
+     name: Check docker build on amd64
+     arch: amd64
+     install:
+       - git fetch origin +refs/pull/${PR_NUMBER}/merge
+       - git checkout -qf FETCH_HEAD
+     script: docker build -f build/dockerfiles/Dockerfile -t "${REGISTRY}/${ORGANIZATION}/${IMAGE}:pr-check-${TRAVIS_CPU_ARCH}" .
+   - <<: *docker-build-pr
+     name: Check docker build on arm64
+     arch: arm64
+   - <<: *docker-build-pr
+     name: Check docker build on ppc64le
+     arch: ppc64le
+   - <<: *docker-build-pr
+     name: check docker build PR on s390x
+     arch: s390x
+
+   - &unit-test
+     if: env(PR_NUMBER) IS present
+     name: Run unit tests on amd64
+     arch: amd64
+     install: 
+       - git fetch origin +refs/pull/${PR_NUMBER}/merge
+       - git checkout -qf FETCH_HEAD
+       - export GO111MODULE="on" 
+       - go get ${gobuild_args} ./...
+     script:
+       - |
+         CGO_ENABLED=0 GOOS=linux go build -mod=vendor -a -ldflags '-w -s' -a -installsuffix cgo -o che-machine-exec .
+         export CHE_WORKSPACE_ID=test_id
+         go test ./... -test.v
+   - <<: *unit-test
+     name: Run unit tests on arm64
+     arch: arm64
+   - <<: *unit-test
+     name: Run unit tests on ppc64le
+     arch: ppc64le
+   - <<: *unit-test
+     name: Run unit tests on s390x
+     arch: s390x
+
+   - &next-build
+     stage: Build and push both short SHA tag and next tag
+     if: type = api AND branch = main AND env(TAG) = "next"
+     name: Build image on amd64
+     arch: amd64
+     script:
+       - bash .travis/build_image.sh
+   - <<: *next-build
+     name: Build image on arm64
+     arch: arm64
+   - <<: *next-build
+     name: Build image on ppc64le
+     arch: ppc64le
+   - <<: *next-build
+     name: Build image on s390x
+     arch: s390x
+   
+   - stage: Publish multiarch image with next & short_sha tag
+     if: type = api AND branch = main AND env(TAG) = "next"
+     script: bash .travis/publish_multiarch.sh
+
+   - &release-build
+     stage: Release che-machine-exec
+     if: type = api AND env(TAG) IS present AND env(TAG) != "next"
+     name: Build image on amd64
+     arch: amd64
+     script: 
+       - |
+         BRANCH=${TAG%.*}.x
+         git checkout "${BRANCH}"
+         bash .travis/build_image.sh
+   - <<: *release-build
+     name: Build image on arm64
+     arch: arm64
+   - <<: *release-build
+     name: Build image on ppc64le
+     arch: ppc64le
+   - <<: *release-build
+     name: Build image on s390x
+     arch: s390x
+
+   - stage: Publish multiarch image with release tag
+     if: type = api AND env(TAG) IS present AND env(TAG) != "next"
+     script: bash .travis/publish_multiarch.sh
